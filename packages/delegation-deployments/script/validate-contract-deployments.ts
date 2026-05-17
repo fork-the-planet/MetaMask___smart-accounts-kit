@@ -314,6 +314,36 @@ const katanaBokutoChain: Chain = {
   },
 };
 
+const intuitionMainnetChain: Chain = {
+  id: 1155,
+  name: 'Intuition Mainnet',
+  rpcUrls: {
+    default: {
+      http: ['https://rpc.intuition.systems/http'],
+    },
+  },
+  nativeCurrency: {
+    name: 'Trust',
+    symbol: 'TRUST',
+    decimals: 18,
+  },
+};
+
+const intuitionTestnetChain: Chain = {
+  id: 13579,
+  name: 'Intuition Testnet',
+  rpcUrls: {
+    default: {
+      http: ['https://testnet.rpc.intuition.systems/http'],
+    },
+  },
+  nativeCurrency: {
+    name: 'TTrust',
+    symbol: 'TTRUST',
+    decimals: 18,
+  },
+};
+
 const celoSepoliaChain: Chain = {
   id: 11142220,
   name: 'Celo Sepolia',
@@ -350,6 +380,8 @@ export const chains = {
   mantleSepolia: mantleSepoliaChain,
   katanaMainnet: katanaMainnetChain,
   katanaBokuto: katanaBokutoChain,
+  intuitionMainnet: intuitionMainnetChain,
+  intuitionTestnet: intuitionTestnetChain,
   celoSepolia: celoSepoliaChain,
 } as any as { [key: string]: Chain };
 
