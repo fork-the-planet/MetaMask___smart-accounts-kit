@@ -119,6 +119,20 @@ describe('x402Erc7710Server', () => {
     ]);
   });
 
+  it('normalizes all-uppercase facilitatorAddresses', async () => {
+    const server = new x402Erc7710Server();
+
+    const result = await server.enhancePaymentRequirements(baseRequirements, {
+      extra: {
+        facilitatorAddresses: ['0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'],
+      },
+    });
+
+    expect(result.extra?.facilitatorAddresses).toEqual([
+      '0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa',
+    ]);
+  });
+
   it('throws when facilitatorAddresses is not an array', async () => {
     const server = new x402Erc7710Server();
 
@@ -154,6 +168,20 @@ describe('x402Erc7710Server', () => {
       }),
     ).rejects.toThrow(
       'Invalid facilitatorAddresses specified: facilitatorAddresses[0] must be a string; facilitatorAddresses[1] is not a valid address: "not-an-address"',
+    );
+  });
+
+  it('throws for invalid mixed-case facilitatorAddress checksums', async () => {
+    const server = new x402Erc7710Server();
+
+    await expect(
+      server.enhancePaymentRequirements(baseRequirements, {
+        extra: {
+          facilitatorAddresses: ['0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAB'],
+        },
+      }),
+    ).rejects.toThrow(
+      'Invalid facilitatorAddresses specified: facilitatorAddresses[0] is not a valid address: "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAB"',
     );
   });
 });
