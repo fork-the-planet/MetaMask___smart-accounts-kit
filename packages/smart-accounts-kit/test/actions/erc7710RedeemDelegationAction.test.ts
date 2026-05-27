@@ -12,6 +12,7 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  encodeErrorResult,
   encodeFunctionData,
 } from 'viem';
 import { createBundlerClient } from 'viem/account-abstraction';
@@ -25,6 +26,7 @@ import type {
   SendUserOperationWithDelegationParameters,
 } from '../../src/actions/erc7710RedeemDelegationAction';
 import { Implementation } from '../../src/constants';
+import { decodeRevertReason } from '../../src/decodeRevertReason';
 import { encodeDelegations } from '../../src/delegation';
 import {
   createExecution,
@@ -264,6 +266,90 @@ describe('erc7710RedeemDelegationAction', () => {
           sendUserOperationWithDelegationArgs.calls[2],
         ],
       });
+    });
+
+    it('should preserve raw bundler errors and allow callers to decode revert reasons', async () => {
+      const bundlerClient = createBundlerClient({
+        transport: custom({ request: mockBundlerRequest }),
+        chain,
+      });
+      const extendedBundlerClient = bundlerClient.extend(
+        erc7710BundlerActions(),
+      );
+
+      const revertData = encodeErrorResult({
+        abi: [
+          {
+            type: 'error',
+            name: 'Error',
+            inputs: [{ name: 'message', type: 'string' }],
+          },
+        ],
+        errorName: 'Error',
+        args: ['AllowedTargetsEnforcer:target-address-not-allowed'],
+      });
+
+      const bundlerError = new Error(
+        [
+          `Execution reverted with reason: UserOperation reverted during simulation with reason: ${revertData}.`,
+          `Request Arguments: callData: ${randomBytes(128)}`,
+          `Details: UserOperation reverted during simulation with reason: ${revertData}`,
+          'Version: viem@2.31.7',
+        ].join('\n'),
+      );
+      stub(bundlerClient, 'sendUserOperation').rejects(bundlerError);
+
+      const sendUserOperationWithDelegationArgs: SendUserOperationWithDelegationParameters =
+        {
+          publicClient,
+          calls: [
+            {
+              to: randomAddress(),
+              value: 0n,
+              permissionContext: [createDelegation()],
+              delegationManager: expectedDelegationManager,
+            },
+          ],
+        };
+
+      await expect(
+        extendedBundlerClient.sendUserOperationWithDelegation(
+          sendUserOperationWithDelegationArgs,
+        ),
+      ).rejects.toBe(bundlerError);
+
+      expect(decodeRevertReason(bundlerError)).toStrictEqual({
+        errorName: 'Error',
+        message: 'AllowedTargetsEnforcer:target-address-not-allowed',
+        rawData: revertData,
+      });
+    });
+
+    it('should preserve bundler errors without decodable revert data', async () => {
+      const bundlerClient = createBundlerClient({
+        transport: custom({ request: mockBundlerRequest }),
+        chain,
+      });
+      const extendedBundlerClient = bundlerClient.extend(
+        erc7710BundlerActions(),
+      );
+
+      const bundlerError = new Error('Bundler unavailable');
+      stub(bundlerClient, 'sendUserOperation').rejects(bundlerError);
+
+      const sendUserOperationWithDelegationArgs: SendUserOperationWithDelegationParameters =
+        {
+          publicClient,
+          calls: [{ to: randomAddress(), value: 0n }],
+        };
+
+      await expect(
+        extendedBundlerClient.sendUserOperationWithDelegation(
+          sendUserOperationWithDelegationArgs,
+        ),
+      ).rejects.toBe(bundlerError);
+
+      expect(decodeRevertReason(bundlerError)).toBeUndefined();
     });
 
     it('should throw an error when SimpleFactory is provided as dependencies factory', async () => {
@@ -541,6 +627,47 @@ describe('erc7710RedeemDelegationAction', () => {
         chain,
         to: args.delegationManager,
         data: redeemDelegationCallData,
+      });
+    });
+
+    it('should preserve raw transaction errors and allow callers to decode revert reasons', async () => {
+      const extendedWalletClient = walletClient.extend(erc7710WalletActions());
+
+      const revertData = encodeErrorResult({
+        abi: [
+          {
+            type: 'error',
+            name: 'Error',
+            inputs: [{ name: 'message', type: 'string' }],
+          },
+        ],
+        errorName: 'Error',
+        args: ['Execution target reverted'],
+      });
+
+      const transactionError = new Error(
+        `Transaction simulation failed. Details: ${revertData}`,
+      );
+      stub(walletClient, 'sendTransaction').rejects(transactionError);
+
+      const args: SendTransactionWithDelegationParameters = {
+        account,
+        chain,
+        to: randomAddress(),
+        value: 0n,
+        data: randomBytes(128),
+        permissionContext: [createDelegation()],
+        delegationManager: expectedDelegationManager,
+      };
+
+      await expect(
+        extendedWalletClient.sendTransactionWithDelegation(args),
+      ).rejects.toBe(transactionError);
+
+      expect(decodeRevertReason(transactionError)).toStrictEqual({
+        errorName: 'Error',
+        message: 'Execution target reverted',
+        rawData: revertData,
       });
     });
 
