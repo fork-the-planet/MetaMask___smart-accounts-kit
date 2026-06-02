@@ -34,7 +34,8 @@ type EnsureRedeemerSufficientlyConstrainedParams = {
   redeemerEnforcer: Hex;
   caveats: Caveat[];
   existingDelegations: Delegation[];
-  redeemerAddresses: Hex[];
+  facilitatorAddresses: Address[] | undefined;
+  redeemerAddresses: Address[] | undefined;
   requireRedeemers: boolean;
 };
 
@@ -57,6 +58,14 @@ type EnsureExpirySufficientlyConstrainedParams = {
   existingDelegations: Delegation[];
   expirySeconds: number;
 };
+
+/**
+ * Inputs for resolving allowed redeemer addresses.
+ */
+type ResolveRedeemerAddressesParams = Pick<
+  EnsureRedeemerSufficientlyConstrainedParams,
+  'facilitatorAddresses' | 'redeemerAddresses'
+>;
 
 /**
  * Resolved context required to build and sign an x402 delegation.
@@ -237,31 +246,83 @@ export const ensureExpirySufficientlyConstrained = ({
 };
 
 /**
+ * Resolves allowed redeemer addresses from facilitator and configured redeemer inputs.
+ *
+ * If both inputs are provided, returns their intersection.
+ * If only one input is provided, returns that input.
+ * If neither input is provided, returns undefined.
+ *
+ * @param options - Redeemer address inputs.
+ * @param options.facilitatorAddresses - Optional facilitator addresses from the PaymentRequirements.
+ * @param options.redeemerAddresses - Optional redeemer addresses from the RedeemersConfig.
+ * @returns Resolved allowed redeemer addresses, or undefined when no input is provided.
+ */
+const resolveRedeemerAddresses = ({
+  facilitatorAddresses,
+  redeemerAddresses,
+}: ResolveRedeemerAddressesParams): Address[] | undefined => {
+  if (!facilitatorAddresses) {
+    if (!redeemerAddresses) {
+      return undefined;
+    }
+    return redeemerAddresses;
+  }
+
+  if (!redeemerAddresses) {
+    return facilitatorAddresses;
+  }
+
+  const normalizedFacilitatorAddresses =
+    facilitatorAddresses.map(normalizeAddress);
+
+  const normalizedRedeemerAddressSet = new Set(
+    redeemerAddresses.map(normalizeAddress),
+  );
+
+  const redeemerAddressesIntersection = normalizedFacilitatorAddresses.filter(
+    (address) => normalizedRedeemerAddressSet.has(address),
+  );
+
+  return redeemerAddressesIntersection;
+};
+
+/**
  * Ensures caveats include a sufficiently strict redeemer constraint.
  *
  * Returns the caveat list unchanged when an existing redeemer caveat is already
  * strict enough, or appends a new redeemer caveat scoped to facilitator addresses.
  *
- * @param options0 - Redeemer constraint evaluation inputs.
- * @param options0.redeemerEnforcer - Address of the redeemer enforcer caveat contract.
- * @param options0.caveats - Currently resolved caveats for the delegation being created.
- * @param options0.existingDelegations - Existing parent-chain delegations to inspect for inherited constraints.
- * @param options0.redeemerAddresses - Optional addresses to which redemption should be constrained.
- * @param options0.requireRedeemers - Whether at least one redeemer constraint must exist when no redeemer addresses are supplied.
+ * @param config - Redeemer constraint evaluation inputs.
+ * @param config.redeemerEnforcer - Address of the redeemer enforcer caveat contract.
+ * @param config.caveats - Currently resolved caveats for the delegation being created.
+ * @param config.existingDelegations - Existing parent-chain delegations to inspect for inherited constraints.
+ * @param config.redeemerAddresses - Optional addresses to which redemption should be constrained.
+ * @param config.requireRedeemers - Whether at least one redeemer constraint must exist.
  * @returns The original caveats when sufficiently constrained, otherwise caveats with a redeemer caveat appended.
- * @throws If no facilitator addresses are provided and no redeemer constraint exists.
+ * @throws If either facilitatorAddresses and/or redeemerAddresses are provided, but the intersection is empty.
+ * @throws If requireRedeemers is true, but no valid redeemer addresses are provided, and no existing redeemer caveat is found in the existingDelegations.
  */
-export const ensureRedeemerSufficientlyConstrained = ({
-  redeemerEnforcer,
-  caveats,
-  existingDelegations,
-  redeemerAddresses,
-  requireRedeemers,
-}: EnsureRedeemerSufficientlyConstrainedParams): Caveat[] => {
-  const redeemerAddressNormalized = normalizeAddress(redeemerEnforcer);
+export const ensureRedeemerSufficientlyConstrained = (
+  config: EnsureRedeemerSufficientlyConstrainedParams,
+): Caveat[] => {
+  // `redeemerAddresses` is the intersection of `facilitatorAddresses` and `redeemerAddresses`.
+  // If either is undefined, it implies no constraint is specified by that value, and the other is returned.
+  // If both are undefined, it implies that no constraint is specified overall.
+  const redeemerAddresses = resolveRedeemerAddresses(config);
 
-  if (redeemerAddresses.length === 0) {
-    if (!requireRedeemers) {
+  // If the result is defined, but zero-length, it implies no redeemers are allowed, which is a non-satisfiable constraint, so an error is thrown.
+  if (redeemerAddresses?.length === 0) {
+    throw new Error(
+      'No valid redeemer addresses were resolved. If both `redeemers.addresses` and `extra.facilitatorAddresses` are provided, they must overlap. If only one is provided, it must include at least one address.',
+    );
+  }
+
+  const { caveats, existingDelegations, redeemerEnforcer } = config;
+
+  const redeemerEnforcerNormalized = normalizeAddress(redeemerEnforcer);
+
+  if (!redeemerAddresses) {
+    if (!config.requireRedeemers) {
       return caveats;
     }
 
@@ -269,7 +330,7 @@ export const ensureRedeemerSufficientlyConstrained = ({
       caveats,
       existingDelegations,
       ({ enforcer }) =>
-        normalizeAddress(enforcer) === redeemerAddressNormalized,
+        normalizeAddress(enforcer) === redeemerEnforcerNormalized,
     );
 
     if (!hasExistingRedeemerCaveat) {
@@ -281,14 +342,13 @@ export const ensureRedeemerSufficientlyConstrained = ({
     return caveats;
   }
 
-  const redeemerAddressesNormalized = redeemerAddresses.map(normalizeAddress);
-  const redeemerAddressesSet = new Set(redeemerAddressesNormalized);
+  const redeemerAddressesSet = new Set(redeemerAddresses.map(normalizeAddress));
 
   const hasSupersedingRedeemerCaveat = hasMatchingCaveats(
     caveats,
     existingDelegations,
     (caveat) => {
-      if (normalizeAddress(caveat.enforcer) !== redeemerAddressNormalized) {
+      if (normalizeAddress(caveat.enforcer) !== redeemerEnforcerNormalized) {
         return false;
       }
 
@@ -296,7 +356,7 @@ export const ensureRedeemerSufficientlyConstrained = ({
         caveat.terms,
       ).redeemers.map(normalizeAddress);
 
-      // If this redeemer caveat only allows facilitator addresses, it is sufficiently constrained.
+      // If this redeemer caveat only allows redeemer addresses, it is sufficiently constrained.
       return allowedRedeemerAddresses.every((item) =>
         redeemerAddressesSet.has(item),
       );
@@ -420,17 +480,12 @@ export const resolvex402DelegationCaveats = ({
     isScopeOptional: true,
   });
 
-  const allRedeemerAddresses = new Set(
-    [...(facilitatorAddresses ?? []), ...(redeemerAddresses ?? [])].map(
-      normalizeAddress,
-    ),
-  );
-
   const caveatsWithRedeemer = ensureRedeemerSufficientlyConstrained({
     redeemerEnforcer,
+    facilitatorAddresses,
+    redeemerAddresses,
     caveats: initialCaveats,
     existingDelegations,
-    redeemerAddresses: Array.from(allRedeemerAddresses),
     requireRedeemers,
   });
 
