@@ -1,7 +1,12 @@
-import { decodeNativeTokenStreamingTerms } from '@metamask/delegation-core';
-import { bigIntToHex } from '@metamask/utils';
+import type { Caveat } from '@metamask/delegation-core';
+import {
+  createExactCalldataTerms,
+  createNativeTokenStreamingTerms,
+  decodeNativeTokenStreamingTerms,
+} from '@metamask/delegation-core';
+import { bigIntToHex, hexToBigInt } from '@metamask/utils';
 
-import type { NativeTokenStreamPermission } from '../../types';
+import type { NativeTokenStreamPermission, Populated } from '../../types';
 import { expiryRuleDecoder } from '../rules/expiry';
 import { nativePayeeRuleDecoder } from '../rules/payee';
 import { redeemerRuleDecoder } from '../rules/redeemer';
@@ -9,7 +14,7 @@ import type {
   ChecksumCaveat,
   ChecksumEnforcersByChainId,
   DecodedPermissionData,
-  MakePermissionDecoderConfig,
+  PermissionDecoderConfig,
 } from '../types';
 import { getTermsByEnforcer } from '../utils';
 
@@ -21,7 +26,7 @@ import { getTermsByEnforcer } from '../utils';
  */
 export function makeNativeTokenStreamDecoderConfig(
   contractAddresses: ChecksumEnforcersByChainId,
-): MakePermissionDecoderConfig {
+): PermissionDecoderConfig {
   const {
     timestampEnforcer,
     nativeTokenStreamingEnforcer,
@@ -103,4 +108,71 @@ function validateAndDecodeData(
     amountPerSecond: bigIntToHex(amountPerSecond),
     startTime,
   };
+}
+
+/**
+ * Enforcers required to build native token stream caveats.
+ */
+export type NativeTokenStreamEnforcers = Pick<
+  ChecksumEnforcersByChainId,
+  'nativeTokenStreamingEnforcer' | 'exactCalldataEnforcer'
+>;
+
+/**
+ * Builds the native-token-stream caveats required for this permission type.
+ *
+ * @param options0 - Caveat builder arguments.
+ * @param options0.permission - Fully populated native-token-stream permission data.
+ * @param options0.contracts - Enforcer addresses used to construct caveats.
+ * @returns The native token streaming and exact-calldata caveats.
+ */
+export function createNativeTokenStreamCaveats({
+  permission,
+  contracts,
+}: {
+  permission: Populated<NativeTokenStreamPermission>;
+  contracts: NativeTokenStreamEnforcers;
+}): Caveat[] {
+  const { initialAmount, maxAmount, amountPerSecond, startTime } =
+    permission.data;
+  const initialAmountBigInt = hexToBigInt(initialAmount);
+  const maxAmountBigInt = hexToBigInt(maxAmount);
+  const amountPerSecondBigInt = hexToBigInt(amountPerSecond);
+
+  if (maxAmountBigInt <= initialAmountBigInt) {
+    throw new Error(
+      'Invalid native-token-stream permission: maxAmount must be greater than initialAmount.',
+    );
+  }
+
+  if (amountPerSecondBigInt === 0n) {
+    throw new Error(
+      'Invalid native-token-stream permission: amountPerSecond must be a positive number.',
+    );
+  }
+
+  if (startTime <= 0) {
+    throw new Error(
+      'Invalid native-token-stream permission: startTime must be a positive number.',
+    );
+  }
+
+  const nativeTokenStreamingCaveat: Caveat = {
+    enforcer: contracts.nativeTokenStreamingEnforcer,
+    terms: createNativeTokenStreamingTerms({
+      initialAmount: initialAmountBigInt,
+      maxAmount: maxAmountBigInt,
+      amountPerSecond: amountPerSecondBigInt,
+      startTime,
+    }),
+    args: '0x',
+  };
+
+  const exactCalldataCaveat: Caveat = {
+    enforcer: contracts.exactCalldataEnforcer,
+    terms: createExactCalldataTerms({ calldata: '0x' }),
+    args: '0x',
+  };
+
+  return [nativeTokenStreamingCaveat, exactCalldataCaveat];
 }

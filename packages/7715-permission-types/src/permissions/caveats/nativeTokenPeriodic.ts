@@ -1,7 +1,12 @@
-import { decodeNativeTokenPeriodTransferTerms } from '@metamask/delegation-core';
-import { bigIntToHex } from '@metamask/utils';
+import type { Caveat } from '@metamask/delegation-core';
+import {
+  createExactCalldataTerms,
+  createNativeTokenPeriodTransferTerms,
+  decodeNativeTokenPeriodTransferTerms,
+} from '@metamask/delegation-core';
+import { bigIntToHex, hexToBigInt } from '@metamask/utils';
 
-import type { NativeTokenPeriodicPermission } from '../../types';
+import type { NativeTokenPeriodicPermission, Populated } from '../../types';
 import { expiryRuleDecoder } from '../rules/expiry';
 import { nativePayeeRuleDecoder } from '../rules/payee';
 import { redeemerRuleDecoder } from '../rules/redeemer';
@@ -9,7 +14,7 @@ import type {
   ChecksumCaveat,
   ChecksumEnforcersByChainId,
   DecodedPermissionData,
-  MakePermissionDecoderConfig,
+  PermissionDecoderConfig,
 } from '../types';
 import { getTermsByEnforcer, MAX_PERIOD_DURATION } from '../utils';
 
@@ -21,7 +26,7 @@ import { getTermsByEnforcer, MAX_PERIOD_DURATION } from '../utils';
  */
 export function makeNativeTokenPeriodicDecoderConfig(
   contractAddresses: ChecksumEnforcersByChainId,
-): MakePermissionDecoderConfig {
+): PermissionDecoderConfig {
   const {
     timestampEnforcer,
     nativeTokenPeriodicEnforcer,
@@ -111,4 +116,73 @@ function validateAndDecodeData(
     periodDuration,
     startTime,
   };
+}
+
+/**
+ * Enforcers required to build native token periodic caveats.
+ */
+export type NativeTokenPeriodicEnforcers = Pick<
+  ChecksumEnforcersByChainId,
+  'nativeTokenPeriodicEnforcer' | 'exactCalldataEnforcer'
+>;
+
+/**
+ * Builds the native-token-periodic caveats required for this permission type.
+ *
+ * @param options0 - Caveat builder arguments.
+ * @param options0.permission - Fully populated native-token-periodic permission data.
+ * @param options0.contracts - Enforcer addresses used to construct caveats.
+ * @returns The native token periodic and exact-calldata caveats.
+ */
+export function createNativeTokenPeriodicCaveats({
+  permission,
+  contracts,
+}: {
+  permission: Populated<NativeTokenPeriodicPermission>;
+  contracts: NativeTokenPeriodicEnforcers;
+}): Caveat[] {
+  const { periodAmount, periodDuration, startTime } = permission.data;
+  const periodAmountBigInt = hexToBigInt(periodAmount);
+
+  if (periodAmountBigInt === 0n) {
+    throw new Error(
+      'Invalid native-token-periodic permission: periodAmount must be a positive number.',
+    );
+  }
+
+  if (periodDuration <= 0) {
+    throw new Error(
+      'Invalid native-token-periodic permission: periodDuration must be a positive number.',
+    );
+  }
+
+  if (periodDuration > MAX_PERIOD_DURATION) {
+    throw new Error(
+      'Invalid native-token-periodic permission: periodDuration must be less than or equal to MAX_PERIOD_DURATION.',
+    );
+  }
+
+  if (startTime <= 0) {
+    throw new Error(
+      'Invalid native-token-periodic permission: startTime must be a positive number.',
+    );
+  }
+
+  const nativeTokenPeriodTransferCaveat: Caveat = {
+    enforcer: contracts.nativeTokenPeriodicEnforcer,
+    terms: createNativeTokenPeriodTransferTerms({
+      periodAmount: periodAmountBigInt,
+      periodDuration,
+      startDate: startTime,
+    }),
+    args: '0x',
+  };
+
+  const exactCalldataCaveat: Caveat = {
+    enforcer: contracts.exactCalldataEnforcer,
+    terms: createExactCalldataTerms({ calldata: '0x' }),
+    args: '0x',
+  };
+
+  return [nativeTokenPeriodTransferCaveat, exactCalldataCaveat];
 }

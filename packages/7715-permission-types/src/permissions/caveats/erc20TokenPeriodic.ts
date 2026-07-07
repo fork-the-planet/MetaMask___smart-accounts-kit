@@ -1,7 +1,12 @@
-import { decodeERC20TokenPeriodTransferTerms } from '@metamask/delegation-core';
-import { bigIntToHex } from '@metamask/utils';
+import type { Caveat } from '@metamask/delegation-core';
+import {
+  createERC20TokenPeriodTransferTerms,
+  createValueLteTerms,
+  decodeERC20TokenPeriodTransferTerms,
+} from '@metamask/delegation-core';
+import { bigIntToHex, hexToBigInt } from '@metamask/utils';
 
-import type { Erc20TokenPeriodicPermission } from '../../types';
+import type { Erc20TokenPeriodicPermission, Populated } from '../../types';
 import { expiryRuleDecoder } from '../rules/expiry';
 import { erc20PayeeRuleDecoder } from '../rules/payee';
 import { redeemerRuleDecoder } from '../rules/redeemer';
@@ -9,7 +14,7 @@ import type {
   ChecksumCaveat,
   ChecksumEnforcersByChainId,
   DecodedPermissionData,
-  MakePermissionDecoderConfig,
+  PermissionDecoderConfig,
 } from '../types';
 import {
   getTermsByEnforcer,
@@ -25,7 +30,7 @@ import {
  */
 export function makeErc20TokenPeriodicDecoderConfig(
   contractAddresses: ChecksumEnforcersByChainId,
-): MakePermissionDecoderConfig {
+): PermissionDecoderConfig {
   const {
     timestampEnforcer,
     erc20PeriodicEnforcer,
@@ -116,4 +121,75 @@ function validateAndDecodeData(
     periodDuration,
     startTime,
   };
+}
+
+/**
+ * Enforcers required to build ERC-20 token periodic caveats.
+ */
+export type Erc20TokenPeriodicEnforcers = Pick<
+  ChecksumEnforcersByChainId,
+  'erc20PeriodicEnforcer' | 'valueLteEnforcer'
+>;
+
+/**
+ * Builds the erc20-token-periodic caveats required for this permission type.
+ *
+ * @param options0 - Caveat builder arguments.
+ * @param options0.permission - Fully populated erc20-token-periodic permission data.
+ * @param options0.contracts - Enforcer addresses used to construct caveats.
+ * @returns The ERC-20 periodic and zero-value caveats.
+ */
+export function createErc20TokenPeriodicCaveats({
+  permission,
+  contracts,
+}: {
+  permission: Populated<Erc20TokenPeriodicPermission>;
+  contracts: Erc20TokenPeriodicEnforcers;
+}): Caveat[] {
+  const { tokenAddress, periodAmount, periodDuration, startTime } =
+    permission.data;
+  const periodAmountBigInt = hexToBigInt(periodAmount);
+
+  if (periodAmountBigInt === 0n) {
+    throw new Error(
+      'Invalid erc20-token-periodic permission: periodAmount must be a positive number.',
+    );
+  }
+
+  if (periodDuration <= 0) {
+    throw new Error(
+      'Invalid erc20-token-periodic permission: periodDuration must be a positive number.',
+    );
+  }
+
+  if (periodDuration > MAX_PERIOD_DURATION) {
+    throw new Error(
+      'Invalid erc20-token-periodic permission: periodDuration must be less than or equal to MAX_PERIOD_DURATION.',
+    );
+  }
+
+  if (startTime <= 0) {
+    throw new Error(
+      'Invalid erc20-token-periodic permission: startTime must be a positive number.',
+    );
+  }
+
+  const erc20PeriodCaveat: Caveat = {
+    enforcer: contracts.erc20PeriodicEnforcer,
+    terms: createERC20TokenPeriodTransferTerms({
+      tokenAddress,
+      periodAmount: periodAmountBigInt,
+      periodDuration,
+      startDate: startTime,
+    }),
+    args: '0x',
+  };
+
+  const valueLteCaveat: Caveat = {
+    enforcer: contracts.valueLteEnforcer,
+    terms: createValueLteTerms({ maxValue: 0n }),
+    args: '0x',
+  };
+
+  return [erc20PeriodCaveat, valueLteCaveat];
 }

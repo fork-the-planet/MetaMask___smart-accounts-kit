@@ -1,6 +1,11 @@
-import { hexToNumber } from '@metamask/utils';
+import type { Caveat } from '@metamask/delegation-core';
+import {
+  createExactCalldataTerms,
+  createNativeTokenPeriodTransferTerms,
+} from '@metamask/delegation-core';
+import { hexToBigInt, hexToNumber } from '@metamask/utils';
 
-import type { NativeTokenAllowancePermission } from '../../types';
+import type { NativeTokenAllowancePermission, Populated } from '../../types';
 import { expiryRuleDecoder } from '../rules/expiry';
 import { nativePayeeRuleDecoder } from '../rules/payee';
 import { redeemerRuleDecoder } from '../rules/redeemer';
@@ -8,7 +13,7 @@ import type {
   ChecksumCaveat,
   ChecksumEnforcersByChainId,
   DecodedPermissionData,
-  MakePermissionDecoderConfig,
+  PermissionDecoderConfig,
 } from '../types';
 import {
   getByteLength,
@@ -26,7 +31,7 @@ import {
  */
 export function makeNativeTokenAllowanceDecoderConfig(
   contractAddresses: ChecksumEnforcersByChainId,
-): MakePermissionDecoderConfig {
+): PermissionDecoderConfig {
   const {
     timestampEnforcer,
     nativeTokenPeriodicEnforcer,
@@ -114,4 +119,62 @@ function validateAndDecodeData(
   }
 
   return { allowanceAmount, startTime };
+}
+
+/**
+ * Enforcers required to build native token allowance caveats.
+ */
+export type NativeTokenAllowanceEnforcers = Pick<
+  ChecksumEnforcersByChainId,
+  'nativeTokenPeriodicEnforcer' | 'exactCalldataEnforcer'
+>;
+
+/**
+ * Builds the native-token-allowance caveats required for this permission type.
+ *
+ * @param options0 - Caveat builder arguments.
+ * @param options0.permission - Fully populated native-token-allowance permission data.
+ * @param options0.contracts - Enforcer addresses used to construct caveats.
+ * @returns The native token allowance and exact-calldata caveats.
+ */
+export function createNativeTokenAllowanceCaveats({
+  permission,
+  contracts,
+}: {
+  permission: Populated<NativeTokenAllowancePermission>;
+  contracts: NativeTokenAllowanceEnforcers;
+}): Caveat[] {
+  const { allowanceAmount, startTime } = permission.data;
+  const allowanceAmountBigInt = hexToBigInt(allowanceAmount);
+
+  if (allowanceAmountBigInt === 0n) {
+    throw new Error(
+      'Invalid native-token-allowance permission: allowanceAmount must be a positive number.',
+    );
+  }
+
+  if (startTime <= 0) {
+    throw new Error(
+      'Invalid native-token-allowance permission: startTime must be a positive number.',
+    );
+  }
+
+  const nativeTokenPeriodTransferCaveat: Caveat = {
+    enforcer: contracts.nativeTokenPeriodicEnforcer,
+    terms: createNativeTokenPeriodTransferTerms({
+      periodAmount: allowanceAmountBigInt,
+      // delegation-core accepts bigint for encoding although the type is `number`.
+      periodDuration: BigInt(UINT256_MAX) as unknown as number,
+      startDate: startTime,
+    }),
+    args: '0x',
+  };
+
+  const exactCalldataCaveat: Caveat = {
+    enforcer: contracts.exactCalldataEnforcer,
+    terms: createExactCalldataTerms({ calldata: '0x' }),
+    args: '0x',
+  };
+
+  return [nativeTokenPeriodTransferCaveat, exactCalldataCaveat];
 }

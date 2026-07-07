@@ -6,10 +6,18 @@ import type { Hex } from '@metamask/utils';
 import { describe, it, expect } from 'vitest';
 
 import { makePermissionDecoderConfigs } from '../../../src/permissions';
-import { makeTokenApprovalRevocationDecoderConfig } from '../../../src/permissions/caveats/tokenApprovalRevocation';
+import {
+  createTokenApprovalRevocationCaveats,
+  makeTokenApprovalRevocationDecoderConfig,
+  type TokenApprovalRevocationEnforcers,
+} from '../../../src/permissions/caveats/tokenApprovalRevocation';
 import { expiryRuleDecoder } from '../../../src/permissions/rules/expiry';
 import type { ChecksumCaveat } from '../../../src/permissions/types';
 import { getChecksumEnforcersByChainId } from '../../../src/permissions/utils';
+import type {
+  TokenApprovalRevocationPermission,
+  Populated,
+} from '../../../src/types';
 
 describe('token-approval-revocation decoder config', () => {
   const chainId = CHAIN_ID.sepolia;
@@ -121,5 +129,92 @@ describe('token-approval-revocation decoder config', () => {
         permit2InvalidateNonces: true,
       });
     });
+  });
+});
+
+describe('createTokenApprovalRevocationCaveats()', () => {
+  const contracts: TokenApprovalRevocationEnforcers = {
+    approvalRevocationEnforcer: '0x7356Ed4321Ff9e7DAE246461829cDC170ff660Ab',
+  };
+
+  const permission: Populated<TokenApprovalRevocationPermission> = {
+    type: 'token-approval-revocation',
+    data: {
+      erc20Approve: true,
+      erc721Approve: true,
+      erc721SetApprovalForAll: true,
+      permit2Approve: true,
+      permit2Lockdown: true,
+      permit2InvalidateNonces: true,
+      justification: 'test',
+    },
+    isAdjustmentAllowed: true,
+  };
+
+  it('creates approvalRevocation caveat', () => {
+    const caveats = createTokenApprovalRevocationCaveats({
+      permission,
+      contracts,
+    });
+
+    expect(caveats).toStrictEqual([
+      {
+        enforcer: contracts.approvalRevocationEnforcer,
+        terms: '0x3f',
+        args: '0x',
+      },
+    ]);
+  });
+
+  it('creates single-flag approvalRevocation caveat', () => {
+    const singleFlagPermission: Populated<TokenApprovalRevocationPermission> = {
+      ...permission,
+      data: {
+        ...permission.data,
+        erc20Approve: true,
+        erc721Approve: false,
+        erc721SetApprovalForAll: false,
+        permit2Approve: false,
+        permit2Lockdown: false,
+        permit2InvalidateNonces: false,
+      },
+    };
+
+    const caveats = createTokenApprovalRevocationCaveats({
+      permission: singleFlagPermission,
+      contracts,
+    });
+
+    expect(caveats).toStrictEqual([
+      {
+        enforcer: contracts.approvalRevocationEnforcer,
+        terms: '0x01',
+        args: '0x',
+      },
+    ]);
+  });
+
+  it('rejects empty-mask approvalRevocation when all flags are false', () => {
+    const noFlagPermission: Populated<TokenApprovalRevocationPermission> = {
+      ...permission,
+      data: {
+        ...permission.data,
+        erc20Approve: false,
+        erc721Approve: false,
+        erc721SetApprovalForAll: false,
+        permit2Approve: false,
+        permit2Lockdown: false,
+        permit2InvalidateNonces: false,
+      },
+    };
+
+    expect(() =>
+      createTokenApprovalRevocationCaveats({
+        permission: noFlagPermission,
+        contracts,
+      }),
+    ).toThrow(
+      'Invalid ApprovalRevocation terms: at least one revocation primitive must be enabled',
+    );
   });
 });

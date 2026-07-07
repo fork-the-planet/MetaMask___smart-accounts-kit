@@ -6,7 +6,11 @@ import { bigIntToHex, type Hex } from '@metamask/utils';
 import { describe, it, expect } from 'vitest';
 
 import { makePermissionDecoderConfigs } from '../../../src/permissions';
-import { makeErc20TokenPeriodicDecoderConfig } from '../../../src/permissions/caveats/erc20TokenPeriodic';
+import {
+  createErc20TokenPeriodicCaveats,
+  makeErc20TokenPeriodicDecoderConfig,
+  type Erc20TokenPeriodicEnforcers,
+} from '../../../src/permissions/caveats/erc20TokenPeriodic';
 import { expiryRuleDecoder } from '../../../src/permissions/rules/expiry';
 import { erc20PayeeRuleDecoder } from '../../../src/permissions/rules/payee';
 import { redeemerRuleDecoder } from '../../../src/permissions/rules/redeemer';
@@ -16,6 +20,10 @@ import {
   MAX_PERIOD_DURATION,
   ZERO_32_BYTES,
 } from '../../../src/permissions/utils';
+import type {
+  Erc20TokenPeriodicPermission,
+  Populated,
+} from '../../../src/types';
 import { toWord } from '../../test-utils';
 
 describe('erc20-token-periodic decoder config', () => {
@@ -190,5 +198,180 @@ describe('erc20-token-periodic decoder config', () => {
         startTime: START_TIME,
       });
     });
+  });
+});
+
+describe('createErc20TokenPeriodicCaveats()', () => {
+  const tokenAddress = '0x1234567890123456789012345678901234567890' as const;
+  const periodAmount = '0x64' as const;
+  const periodDuration = 86400;
+  const startTime = 1729900800;
+
+  const contracts: Erc20TokenPeriodicEnforcers = {
+    erc20PeriodicEnforcer: '0x7356Ed4321Ff9e7DAE246461829cDC170ff660Ab',
+    valueLteEnforcer: '0x5e12Ca712176E7557e4fAa1c8cc27382B60B5e39',
+  };
+
+  const permission: Populated<Erc20TokenPeriodicPermission> = {
+    type: 'erc20-token-periodic',
+    data: {
+      tokenAddress,
+      periodAmount,
+      periodDuration,
+      startTime,
+      justification: 'test',
+    },
+    isAdjustmentAllowed: true,
+  };
+
+  it('creates erc20Periodic and valueLte caveats', () => {
+    const caveats = createErc20TokenPeriodicCaveats({
+      permission,
+      contracts,
+    });
+    const expectedTerms = `0x${tokenAddress.slice(2)}${toWord(BigInt(periodAmount))}${toWord(periodDuration)}${toWord(startTime)}`;
+
+    expect(caveats).toStrictEqual([
+      {
+        enforcer: contracts.erc20PeriodicEnforcer,
+        terms: expectedTerms,
+        args: '0x',
+      },
+      {
+        enforcer: contracts.valueLteEnforcer,
+        terms: ZERO_32_BYTES,
+        args: '0x',
+      },
+    ]);
+  });
+
+  it('rejects malformed numeric hex input', () => {
+    const invalidPermission = {
+      ...permission,
+      data: {
+        ...permission.data,
+        periodAmount: 'not-hex' as Hex,
+      },
+    };
+
+    expect(() =>
+      createErc20TokenPeriodicCaveats({
+        permission: invalidPermission,
+        contracts,
+      }),
+    ).toThrow();
+  });
+
+  it('rejects when periodAmount is zero', () => {
+    expect(() =>
+      createErc20TokenPeriodicCaveats({
+        permission: {
+          ...permission,
+          data: {
+            ...permission.data,
+            periodAmount: '0x0',
+          },
+        },
+        contracts,
+      }),
+    ).toThrow(
+      'Invalid erc20-token-periodic permission: periodAmount must be a positive number.',
+    );
+  });
+
+  it('rejects when periodDuration is zero', () => {
+    expect(() =>
+      createErc20TokenPeriodicCaveats({
+        permission: {
+          ...permission,
+          data: {
+            ...permission.data,
+            periodDuration: 0,
+          },
+        },
+        contracts,
+      }),
+    ).toThrow(
+      'Invalid erc20-token-periodic permission: periodDuration must be a positive number.',
+    );
+  });
+
+  it('rejects when periodDuration exceeds MAX_PERIOD_DURATION', () => {
+    expect(() =>
+      createErc20TokenPeriodicCaveats({
+        permission: {
+          ...permission,
+          data: {
+            ...permission.data,
+            periodDuration: MAX_PERIOD_DURATION + 1,
+          },
+        },
+        contracts,
+      }),
+    ).toThrow(
+      'Invalid erc20-token-periodic permission: periodDuration must be less than or equal to MAX_PERIOD_DURATION.',
+    );
+  });
+
+  it('rejects when startTime is zero', () => {
+    expect(() =>
+      createErc20TokenPeriodicCaveats({
+        permission: {
+          ...permission,
+          data: {
+            ...permission.data,
+            startTime: 0,
+          },
+        },
+        contracts,
+      }),
+    ).toThrow(
+      'Invalid erc20-token-periodic permission: startTime must be a positive number.',
+    );
+  });
+
+  it('keeps valueLte caveat fixed at zero across varied inputs', () => {
+    const variedPermission: Populated<Erc20TokenPeriodicPermission> = {
+      ...permission,
+      data: {
+        ...permission.data,
+        tokenAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        periodAmount:
+          '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+        periodDuration: 1,
+        startTime: 1,
+      },
+    };
+
+    const caveats = createErc20TokenPeriodicCaveats({
+      permission: variedPermission,
+      contracts,
+    });
+
+    expect(caveats[1]?.enforcer).toBe(contracts.valueLteEnforcer);
+    expect(caveats[1]?.terms).toBe(ZERO_32_BYTES);
+  });
+
+  it('encodes provided token address in periodic terms', () => {
+    const alternateTokenAddress =
+      '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as Hex;
+    const permissionWithAltToken = {
+      ...permission,
+      data: {
+        ...permission.data,
+        tokenAddress: alternateTokenAddress,
+      },
+    };
+
+    const caveats = createErc20TokenPeriodicCaveats({
+      permission: permissionWithAltToken,
+      contracts,
+    });
+    const erc20PeriodicTerms = caveats[0]?.terms as Hex;
+
+    expect(caveats[0]?.enforcer).toBe(contracts.erc20PeriodicEnforcer);
+    expect(
+      erc20PeriodicTerms.startsWith(`0x${alternateTokenAddress.slice(2)}`),
+    ).toBe(true);
   });
 });
